@@ -8,15 +8,15 @@ The stock `vllm/vllm-openai:hy4-flash` image refuses this model on SM120 and can
 
 ## TL;DR
 
-| | **V1** | Baseline | FP8 ([sibling](https://github.com/hyudryu/HY-4-Flash-FP8-2xRTXPro6000)) |
+| | Baseline | **V1** | FP8 ([sibling](https://github.com/hyudryu/HY-4-Flash-FP8-2xRTXPro6000)) |
 |---|---|---|---|
-| Decode, 1 user: prose / coding / counting | **92 / 120 / 142** tok/s | 75 / 103 / 132 | 62 / 87 / 106 |
-| Decode, 8 users aggregate: prose / coding / counting | **416 / 519 / 610** tok/s | 287 / 372 / 439 | 211 / 274 / 347 |
-| Decode at 128K context, 8 users aggregate | **396 tok/s** | 290 | — (didn't fit) |
-| Prefill (median, 16K–64K) | **~5,389–5,406 tok/s** | ~5,130–5,155 | ~5,200–5,370 |
-| Decode step latency, 1 user | **20.3 ms** | 26.5 ms | — |
-| Context window / KV pool | 524,288 / 3.45M tokens | same | 262,144 / 308K tokens |
-| Weights per GPU / pinned host RAM | 50.1 GiB / ~62 GiB | same | 80.8 GiB / ~118 GiB |
+| Decode, 1 user: prose / coding / counting | 75 / 103 / 132 | **92 / 120 / 142** tok/s | 62 / 87 / 106 |
+| Decode, 8 users aggregate: prose / coding / counting | 287 / 372 / 439 | **416 / 519 / 610** tok/s | 211 / 274 / 347 |
+| Decode at 128K context, 8 users aggregate | 290 | **396 tok/s** | — (didn't fit) |
+| Prefill (median, 16K–64K) | ~5,130–5,155 | **~5,389–5,406 tok/s** | ~5,200–5,370 |
+| Decode step latency, 1 user | 26.5 ms | **20.3 ms** | — |
+| Context window / KV pool | same | 524,288 / 3.45M tokens | 262,144 / 308K tokens |
+| Weights per GPU / pinned host RAM | same | 50.1 GiB / ~62 GiB | 80.8 GiB / ~118 GiB |
 
 Decode numbers include DFly speculative decoding and count reasoning tokens. Sampling is greedy (temperature 0).
 
@@ -208,15 +208,15 @@ Method: [`bench/bench.py`](bench/bench.py), the same as the FP8 repo, plus a per
 
 ### Prompt processing (prefill), single request, warm
 
-| Prompt tokens | Time to first token (s) | Prefill tok/s | Baseline tok/s | Change |
+| Prompt tokens | Baseline tok/s | V1 tok/s | Change | Time to first token (s) |
 |---|---|---|---|---|
-| 1,029 | 0.36 | 2,859 | 2,860 | -0% |
-| 4,069 | 0.87 | 4,660 | 4,521 | +3% |
-| 8,085 | 1.61 | 5,095 | 4,845 | +5% |
-| 16,361 | 3.02 | 5,406 | 5,133 | +5% |
-| 32,795 | 6.09 | 5,389 | 5,155 | +5% |
-| 65,255 | 12.12 | 5,405 | 5,138 | +5% |
-| 130,772 | 25.27 | 5,168 | 4,926 | +5% |
+| 1,029 | 2,860 | 2,859 | -0% | 0.36 |
+| 4,069 | 4,521 | 4,660 | +3% | 0.87 |
+| 8,085 | 4,845 | 5,095 | +5% | 1.61 |
+| 16,361 | 5,133 | 5,406 | +5% | 3.02 |
+| 32,795 | 5,155 | 5,389 | +5% | 6.09 |
+| 65,255 | 5,138 | 5,405 | +5% | 12.12 |
+| 130,772 | 4,926 | 5,168 | +5% | 25.27 |
 
 Median of **5 sweeps** after a JIT warm-up, for both V1 and the baseline; per-run data is in `bench/results/*/results-prefill-warm{1..5}.json`. Prefill was not the target of V1; the gain comes from the same kernel fusions.
 
@@ -232,20 +232,20 @@ Median of **5 sweeps** after a JIT warm-up, for both V1 and the baseline; per-ru
   <img alt="Per-user decode speed vs concurrency, V1 solid and baseline dashed: V1 prose 92, 80, 68, 52 tok/s; coding 120, 103, 83, 66; counting 142, 121, 99, 77 at C1, C2, C4, C8" src="docs/charts/decode-per-user-light.svg">
 </picture>
 
-| Workload | C | Aggregate tok/s | Baseline | Change | Per-user tok/s | TTFT p50 (s) |
+| Workload | C | Baseline tok/s | V1 tok/s | Change | Per-user tok/s | TTFT p50 (s) |
 |---|---|---|---|---|---|---|
-| Prose (short story) | 1 | **92.1** | 75.3 | +22% | 92.1 | 0.14 |
-|  | 2 | **160.9** | 123.1 | +31% | 80.3 | 0.56 |
-|  | 4 | **273.1** | 193.5 | +41% | 67.8 | 0.44 |
-|  | 8 | **416.0** | 286.7 | +45% | 52.1 | 0.93 |
-| Coding (Python + tests) | 1 | **120.2** | 103.1 | +17% | 120.2 | 0.15 |
-|  | 2 | **201.7** | 157.2 | +28% | 102.9 | 0.25 |
-|  | 4 | **328.0** | 243.0 | +35% | 83.3 | 0.57 |
-|  | 8 | **519.1** | 371.6 | +40% | 65.9 | 0.62 |
-| Counting (1…400 in words) | 1 | **141.7** | 132.4 | +7% | 141.7 | 0.16 |
-|  | 2 | **239.2** | 224.3 | +7% | 120.9 | 0.21 |
-|  | 4 | **393.5** | 312.5 | +26% | 99.2 | 0.50 |
-|  | 8 | **610.4** | 439.4 | +39% | 77.2 | 0.70 |
+| Prose (short story) | 1 | 75.3 | **92.1** | +22% | 92.1 | 0.14 |
+|  | 2 | 123.1 | **160.9** | +31% | 80.3 | 0.56 |
+|  | 4 | 193.5 | **273.1** | +41% | 67.8 | 0.44 |
+|  | 8 | 286.7 | **416.0** | +45% | 52.1 | 0.93 |
+| Coding (Python + tests) | 1 | 103.1 | **120.2** | +17% | 120.2 | 0.15 |
+|  | 2 | 157.2 | **201.7** | +28% | 102.9 | 0.25 |
+|  | 4 | 243.0 | **328.0** | +35% | 83.3 | 0.57 |
+|  | 8 | 371.6 | **519.1** | +40% | 65.9 | 0.62 |
+| Counting (1…400 in words) | 1 | 132.4 | **141.7** | +7% | 141.7 | 0.16 |
+|  | 2 | 224.3 | **239.2** | +7% | 120.9 | 0.21 |
+|  | 4 | 312.5 | **393.5** | +26% | 99.2 | 0.50 |
+|  | 8 | 439.4 | **610.4** | +39% | 77.2 | 0.70 |
 
 Medians of 2 rounds per cell. Solid lines in the charts are V1 and dashed lines are the baseline. Across the whole V1 benchmark the FP8 drafter's acceptance was **38.6% per draft token**, about **2.16 tokens per decode step** with 3 drafted.
 
@@ -256,28 +256,28 @@ Medians of 2 rounds per cell. Solid lines in the charts are V1 and dashed lines 
   <img alt="Aggregate decode throughput at long context (V1): all five context lengths from 8K to 128K track each other, about 92-96 tok/s at C1 and 396-434 tok/s at C8" src="docs/charts/decode-context-light.svg">
 </picture>
 
-| Context | C | Aggregate decode tok/s | Baseline | Change | Per-user tok/s | TTFT p50 (s) |
+| Context | C | Baseline tok/s | V1 tok/s | Change | Per-user tok/s | TTFT p50 (s) |
 |---|---|---|---|---|---|---|
-| 8K | 1 | **96.1** | 79.3 | +21% | 96.1 | 1.6 |
-| 8K | 2 | **150.6** | 125.6 | +20% | 68.0 | 2.3 |
-| 8K | 4 | **265.6** | 197.8 | +34% | 56.7 | 5.4 |
-| 8K | 8 | **433.6** | 302.9 | +43% | 36.8 | 8.4 |
-| 16K | 1 | **92.3** | 82.1 | +13% | 92.3 | 3.0 |
-| 16K | 2 | **167.4** | 123.6 | +35% | 76.1 | 5.3 |
-| 16K | 4 | **266.3** | 193.0 | +38% | 49.5 | 9.0 |
-| 16K | 8 | **427.0** | 307.3 | +39% | 28.4 | 15.0 |
-| 32K | 1 | **91.6** | 84.5 | +8% | 91.6 | 6.0 |
-| 32K | 2 | **155.6** | 129.8 | +20% | 59.2 | 9.0 |
-| 32K | 4 | **261.6** | 192.0 | +36% | 31.9 | 15.0 |
-| 32K | 8 | **404.7** | 288.0 | +41% | 17.3 | 27.8 |
-| 64K | 1 | **93.8** | 65.5 | +43% | 93.8 | 12.7 |
-| 64K | 2 | **151.3** | 119.2 | +27% | 51.6 | 18.6 |
-| 64K | 4 | **268.5** | 207.3 | +29% | 20.2 | 30.5 |
-| 64K | 8 | **424.0** | 290.8 | +46% | 9.9 | 55.1 |
-| 128K | 1 | **91.5** | 73.9 | +24% | 91.5 | 26.1 |
-| 128K | 2 | **154.6** | 121.0 | +28% | 45.4 | 38.4 |
-| 128K | 4 | **247.5** | 176.5 | +40% | 11.8 | 64.2 |
-| 128K | 8 | **395.8** | 290.3 | +36% | 5.2 | 116.1 |
+| 8K | 1 | 79.3 | **96.1** | +21% | 96.1 | 1.6 |
+| 8K | 2 | 125.6 | **150.6** | +20% | 68.0 | 2.3 |
+| 8K | 4 | 197.8 | **265.6** | +34% | 56.7 | 5.4 |
+| 8K | 8 | 302.9 | **433.6** | +43% | 36.8 | 8.4 |
+| 16K | 1 | 82.1 | **92.3** | +13% | 92.3 | 3.0 |
+| 16K | 2 | 123.6 | **167.4** | +35% | 76.1 | 5.3 |
+| 16K | 4 | 193.0 | **266.3** | +38% | 49.5 | 9.0 |
+| 16K | 8 | 307.3 | **427.0** | +39% | 28.4 | 15.0 |
+| 32K | 1 | 84.5 | **91.6** | +8% | 91.6 | 6.0 |
+| 32K | 2 | 129.8 | **155.6** | +20% | 59.2 | 9.0 |
+| 32K | 4 | 192.0 | **261.6** | +36% | 31.9 | 15.0 |
+| 32K | 8 | 288.0 | **404.7** | +41% | 17.3 | 27.8 |
+| 64K | 1 | 65.5 | **93.8** | +43% | 93.8 | 12.7 |
+| 64K | 2 | 119.2 | **151.3** | +27% | 51.6 | 18.6 |
+| 64K | 4 | 207.3 | **268.5** | +29% | 20.2 | 30.5 |
+| 64K | 8 | 290.8 | **424.0** | +46% | 9.9 | 55.1 |
+| 128K | 1 | 73.9 | **91.5** | +24% | 91.5 | 26.1 |
+| 128K | 2 | 121.0 | **154.6** | +28% | 45.4 | 38.4 |
+| 128K | 4 | 176.5 | **247.5** | +40% | 11.8 | 64.2 |
+| 128K | 8 | 290.3 | **395.8** | +36% | 5.2 | 116.1 |
 
 Thanks to sparse attention, aggregate decode speed barely depends on context: about 396–434 tok/s at C8 from 8K to 128K. Per-user tok/s at higher C is much lower than aggregate ÷ C, because each request's decode overlaps the other requests' prefills. TTFT at high C is dominated by those queued prefills: 8 × 128K is about 1M prompt tokens.
 
