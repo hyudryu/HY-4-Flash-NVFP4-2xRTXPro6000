@@ -2,7 +2,7 @@
 # Serve Avifenesh/Hy4-flash-NVFP4 on 2x RTX PRO 6000 Blackwell (SM120) with vLLM,
 # using the vendor FP8 DFly drafter from tencent/Hy4-flash-FP8.
 # The stock vllm/vllm-openai:hy4-flash image supports neither SM120 for this model
-# nor this NVFP4 checkpoint; the eight files in ../patch are bind-mounted read-only
+# nor this NVFP4 checkpoint; the ten files in ../patch are bind-mounted read-only
 # over the image (see README "The patch").
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,7 +15,8 @@ PORT=${PORT:-8000}
 MOUNTS=()
 for f in hy_v4_flash/nvidia/sm120.py hy_v4_flash/nvidia/attention.py hy_v4/nvidia/attention.py \
          hy_v4_flash/nvidia/model.py hy_v4_flash/nvidia/engram.py hy_v4_flash/nvidia/nvfp4_fold.py \
-         hy_v4/dfly_config.py hy_v4_flash/nvidia/swa.py; do
+         hy_v4/dfly_config.py hy_v4_flash/nvidia/swa.py \
+         hy_v4_flash/nvidia/compressed_indexer.py hy_v4_flash/nvidia/indexpool_fused.py; do
   MOUNTS+=(-v "$P/$f:$D/$f:ro")
 done
 

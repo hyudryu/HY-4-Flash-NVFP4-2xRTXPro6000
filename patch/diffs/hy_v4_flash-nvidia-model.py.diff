@@ -1,6 +1,15 @@
 --- a/vllm/models/hy_v4_flash/nvidia/model.py
 +++ b/vllm/models/hy_v4_flash/nvidia/model.py
-@@ -28,7 +28,7 @@
+@@ -8,6 +8,8 @@
+ 
+ import regex as re
+ import torch
++
++from vllm.models.hy_v4.nvidia.mrope import set_token_rope
+ from torch import nn
+ 
+ from vllm.config import VllmConfig
+@@ -28,7 +30,7 @@
  
  _EXPERT_WEIGHT = re.compile(
      r"(.*\.experts)\.(?:(\d+)\.)?(gate_proj|up_proj|down_proj|gate_up_proj)"
@@ -9,7 +18,7 @@
  )
  
  
-@@ -91,6 +91,18 @@
+@@ -91,6 +93,18 @@
              raise ValueError(
                  "Flash online quantization requires MoE-only fp8_per_block"
              )
@@ -28,7 +37,22 @@
      elif quantization is not None:
          raise ValueError("HYV4 Flash supports only FP8 blockwise quantization")
  
-@@ -215,6 +227,10 @@
+@@ -194,6 +208,14 @@
+             layer_id - 1: index
+             for index, layer_id in enumerate(self.config.engram_layer_ids)
+         }
++        # V2: per-token M-RoPE cos/sin rows, once per pass for each distinct
++        # rotary table (sliding and sparse layers use different thetas).
++        seen_rope = set()
++        for layer in self.layers:
++            rope = layer.self_attn.rotary_emb
++            if id(rope) not in seen_rope:
++                seen_rope.add(id(rope))
++                set_token_rope(rope, positions, hidden)
+         for index, layer in enumerate(self.layers):
+             if index in hash_indices:
+                 hidden = layer.hc_attn_layer.prepare_input(hidden)
+@@ -215,6 +237,10 @@
              if engram is not None:
                  assert self.engram_hash is not None
                  layer, leaf = engram.groups()
@@ -39,7 +63,7 @@
                  if int(layer) + 1 not in (self.config.engram_layer_ids or ()):
                      raise ValueError(f"Undeclared Engram checkpoint weight: {name}")
                  if leaf == "lookup_table":
-@@ -248,7 +264,13 @@
+@@ -248,7 +274,13 @@
                      raise ValueError(f"Unknown Flash expert weight: {name}")
                  parameter = parameters[target]
                  if expert_id is None:
@@ -54,7 +78,7 @@
                          raise ValueError(
                              f"Invalid packed expert shape for {name}: {value.shape}"
                          )
-@@ -259,7 +281,11 @@
+@@ -259,7 +291,11 @@
                      if not 0 <= index < self.config.num_experts:
                          raise ValueError(f"Expert index out of range: {name}")
                      tensor = value[index] if expert_id is None else value
@@ -67,7 +91,7 @@
                      for shard, piece in zip(shards, pieces):
                          success = parameter.weight_loader(
                              parameter,
-@@ -287,6 +313,16 @@
+@@ -287,6 +323,16 @@
                      continue
                  local_head = int(head) - embedding.head_start
                  name = f"{prefix}.lookup_per_head_norms.{local_head}.{leaf}"
@@ -84,7 +108,7 @@
              if name not in parameters:
                  raise ValueError(f"Unknown Flash checkpoint weight: {name}")
              parameter = parameters[name]
-@@ -409,16 +445,51 @@
+@@ -409,16 +455,51 @@
                      raise ValueError(
                          f"Missing Flash checkpoint weights: {sorted(missing)}"
                      )

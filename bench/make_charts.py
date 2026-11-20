@@ -8,9 +8,9 @@ from xml.sax.saxutils import escape
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "docs", "charts")
-RESULTS = os.path.join(HERE, "results", os.environ.get("RESULTS", "v1"))      # charted run
+RESULTS = os.path.join(HERE, "results", os.environ.get("RESULTS", "v2"))      # charted run
 BASELINE = os.path.join(HERE, "results", "baseline")                          # dashed comparison
-MODEL_LABEL = "Hy4-flash-NVFP4 + FP8 DFly drafter, V1"
+MODEL_LABEL = "Hy4-flash-NVFP4 + FP8 DFly drafter, " + os.path.basename(RESULTS).upper()
 LABEL_NUDGE = {}  # per-series (dx, dy) for the context chart end labels; tune after a render
 
 THEMES = {

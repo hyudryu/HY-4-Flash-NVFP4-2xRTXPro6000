@@ -1,0 +1,111 @@
+--- a/vllm/models/hy_v4_flash/nvidia/compressed_indexer.py
++++ b/vllm/models/hy_v4_flash/nvidia/compressed_indexer.py
+@@ -30,6 +30,7 @@
+     select_groups,
+     write_pool,
+ )
++from .indexpool_fused import expand_groups_into, rotate_fwht_quantize
+ from .indexpool_prepare import prepare_groups, write_tails
+ 
+ 
+@@ -83,6 +84,16 @@
+         )
+         self.num_sms = num_compute_units()
+         self.varlen = current_platform.is_device_capability_family(100)
++        # V2: one-launch rotation + Walsh-Hadamard + FP8 quantization and
++        # one-launch group expansion (bit-identical to the reference ops; see
++        # indexpool_fused.py). Anything outside the tested layout falls back.
++        self.fused = (
++            self.rope_dim == 64
++            and self.rope_parameters.get("rope_type", "default") == "default"
++            and self.rope_parameters.get("mrope_interleaved", True)
++            and topk_indices_buffer.dtype == torch.int32
++            and topk_indices_buffer.shape[1] == (self.group_budget + 1) * self.ratio
++        )
+ 
+     def forward(self, hidden_states, q_c, positions, rope=None):
+         output = self.topk_indices_buffer[: hidden_states.shape[0]]
+@@ -131,11 +142,17 @@
+             pooled = gated_pool(
+                 values, gates, self.intra_group_ape, self.key_norm.weight, self.eps
+             ).bfloat16()
+-            quant, scales = fwht_quantize(
+-                rotate_indexer(
++            if self.fused:
++                quant, scales = rotate_fwht_quantize(
+                     pooled, group_positions, self.rope_dim, self.rope_parameters
+                 )
+-            )
++                quant = quant.reshape(-1, 128).view(torch.float8_e4m3fn)
++            else:
++                quant, scales = fwht_quantize(
++                    rotate_indexer(
++                        pooled, group_positions, self.rope_dim, self.rope_parameters
++                    )
++                )
+             if mqa_logits_use_mx_scales():
+                 scales = (scales.view(torch.int32) >> 23) * 0x01010101
+             write_pool(
+@@ -147,15 +164,27 @@
+         query = self.query_projection(q_c)[0][:tokens].reshape(
+             tokens, self.num_heads, 128
+         )
+-        query = rotate_indexer(
+-            query, positions[..., :tokens], self.rope_dim, self.rope_parameters
+-        )
+-        quant_q, scales_q = fwht_quantize(query.reshape(-1, 128).bfloat16())
+         heads = 32 if self.num_heads <= 32 else 64
+-        quant_q = F.pad(
+-            quant_q.view(torch.uint8).reshape(tokens, self.num_heads, 128),
+-            (0, 0, 0, heads - self.num_heads),
+-        ).view(torch.float8_e4m3fn)
++        fused = self.fused and query.dtype == torch.bfloat16
++        if fused:
++            quant_q, scales_q = rotate_fwht_quantize(
++                query.reshape(-1, 128),
++                positions[..., :tokens],
++                self.rope_dim,
++                self.rope_parameters,
++                rows_per_position=self.num_heads,
++                pad_rows=heads,
++            )
++            quant_q = quant_q.view(torch.float8_e4m3fn)
++        else:
++            query = rotate_indexer(
++                query, positions[..., :tokens], self.rope_dim, self.rope_parameters
++            )
++            quant_q, scales_q = fwht_quantize(query.reshape(-1, 128).bfloat16())
++            quant_q = F.pad(
++                quant_q.view(torch.uint8).reshape(tokens, self.num_heads, 128),
++                (0, 0, 0, heads - self.num_heads),
++            ).view(torch.float8_e4m3fn)
+         weights = self.head_weight_projection(hidden_states)[0][:tokens].float()
+         weights = weights * (self.num_heads**-0.5 * 128**-0.5)
+         weights = F.pad(
+@@ -199,12 +228,22 @@
+                 indices=indices,
+             )
+             recalled = select_groups(logits, bounds, self.group_budget)
+-            output[begin:end].copy_(
+-                expand_groups(
++            if fused and recalled.dtype == torch.int32:
++                # `output` was filled with -1 above.
++                expand_groups_into(
++                    output[begin:end],
+                     recalled,
+                     logical[begin:end],
+                     self.ratio,
+-                    active=live[begin:end],
++                    live[begin:end],
++                )
++            else:
++                output[begin:end].copy_(
++                    expand_groups(
++                        recalled,
++                        logical[begin:end],
++                        self.ratio,
++                        active=live[begin:end],
++                    )
+                 )
+-            )
+         return output

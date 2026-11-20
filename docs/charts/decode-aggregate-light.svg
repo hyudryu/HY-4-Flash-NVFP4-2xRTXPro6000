@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 430" width="760" height="430" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Aggregate decode throughput vs concurrency">
 <rect width="760" height="430" rx="8" fill="#fcfcfb"/>
 <text x="24" y="30" font-size="17" font-weight="600" fill="#0b0b0b">Aggregate decode throughput vs concurrency</text>
-<text x="24" y="51" font-size="12.5" fill="#52514e">Hy4-flash-NVFP4 + FP8 DFly drafter, V1 · 2× RTX PRO 6000 @ 450 W · TP2 · short prompts, 1,024 output tokens</text>
+<text x="24" y="51" font-size="12.5" fill="#52514e">Hy4-flash-NVFP4 + FP8 DFly drafter, V2 · 2× RTX PRO 6000 @ 450 W · TP2 · short prompts, 1,024 output tokens</text>
 <circle cx="30.0" cy="72.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <text x="41" y="76" font-size="12.5" fill="#52514e">Prose</text>
 <rect x="91.4" y="67.4" width="9.2" height="9.2" rx="1.5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
@@ -29,22 +29,22 @@
 <polyline points="132.2,347.5 268.8,330.6 405.2,305.8 541.8,273.0" fill="none" stroke="#2a78d6" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round" opacity="0.75"/>
 <polyline points="132.2,337.6 268.8,318.6 405.2,288.3 541.8,243.0" fill="none" stroke="#eb6834" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round" opacity="0.75"/>
 <polyline points="132.2,327.3 268.8,294.9 405.2,263.9 541.8,219.1" fill="none" stroke="#1baf7a" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round" opacity="0.75"/>
-<polyline points="132.2,341.5 268.8,317.3 405.2,277.7 541.8,227.4" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="132.2" cy="341.5" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="268.8" cy="317.3" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="405.2" cy="277.7" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="541.8" cy="227.4" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<polyline points="132.2,331.6 268.8,302.9 405.2,258.4 541.8,191.0" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<rect x="127.7" y="327.0" width="9.2" height="9.2" rx="1.5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<rect x="264.1" y="298.3" width="9.2" height="9.2" rx="1.5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<rect x="400.6" y="253.8" width="9.2" height="9.2" rx="1.5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<rect x="537.1" y="186.4" width="9.2" height="9.2" rx="1.5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<polyline points="132.2,324.1 268.8,289.7 405.2,235.3 541.8,158.8" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M132.2,318.1 L137.8,328.1 L126.7,328.1 Z" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"/>
-<path d="M268.8,283.7 L274.4,293.7 L263.1,293.7 Z" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"/>
-<path d="M405.2,229.3 L410.9,239.3 L399.6,239.3 Z" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"/>
-<path d="M541.8,152.8 L547.4,162.8 L536.1,162.8 Z" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"/>
-<text x="553.8" y="231.4" font-size="12.5" fill="#0b0b0b"><tspan font-weight="600">416</tspan><tspan fill="#52514e"> Prose</tspan></text>
-<text x="553.8" y="195.0" font-size="12.5" fill="#0b0b0b"><tspan font-weight="600">519</tspan><tspan fill="#52514e"> Coding</tspan></text>
-<text x="553.8" y="162.8" font-size="12.5" fill="#0b0b0b"><tspan font-weight="600">610</tspan><tspan fill="#52514e"> Counting</tspan></text>
+<polyline points="132.2,332.6 268.8,304.6 405.2,262.5 541.8,207.1" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="132.2" cy="332.6" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="268.8" cy="304.6" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="405.2" cy="262.5" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="541.8" cy="207.1" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<polyline points="132.2,318.0 268.8,285.4 405.2,233.8 541.8,168.4" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="127.7" y="313.4" width="9.2" height="9.2" rx="1.5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<rect x="264.1" y="280.8" width="9.2" height="9.2" rx="1.5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<rect x="400.6" y="229.2" width="9.2" height="9.2" rx="1.5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<rect x="537.1" y="163.8" width="9.2" height="9.2" rx="1.5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<polyline points="132.2,316.8 268.8,274.4 405.2,209.5 541.8,137.9" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M132.2,310.8 L137.8,320.8 L126.7,320.8 Z" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"/>
+<path d="M268.8,268.4 L274.4,278.4 L263.1,278.4 Z" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"/>
+<path d="M405.2,203.5 L410.9,213.5 L399.6,213.5 Z" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"/>
+<path d="M541.8,131.9 L547.4,141.9 L536.1,141.9 Z" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2" stroke-linejoin="round"/>
+<text x="553.8" y="211.1" font-size="12.5" fill="#0b0b0b"><tspan font-weight="600">474</tspan><tspan fill="#52514e"> Prose</tspan></text>
+<text x="553.8" y="172.4" font-size="12.5" fill="#0b0b0b"><tspan font-weight="600">583</tspan><tspan fill="#52514e"> Coding</tspan></text>
+<text x="553.8" y="141.9" font-size="12.5" fill="#0b0b0b"><tspan font-weight="600">670</tspan><tspan fill="#52514e"> Counting</tspan></text>
 </svg>

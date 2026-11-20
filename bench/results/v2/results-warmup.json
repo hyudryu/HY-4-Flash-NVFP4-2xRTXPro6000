@@ -1,0 +1,30 @@
+{
+ "meta": {
+  "url": "http://localhost:8000",
+  "model": "hy4-flash",
+  "time": "2026-11-20T08:04:37-0800",
+  "tokens_per_filler_word": 1.948,
+  "continuous_usage_stats": true,
+  "max_tokens": 1024,
+  "context_max_tokens": 512,
+  "rounds": 2,
+  "pool_tokens": 0,
+  "seed_offset": 1
+ },
+ "prefill": [
+  {
+   "target_tokens": 4096,
+   "prompt_tokens": 4084,
+   "cached_tokens": 0,
+   "ttft_s": 1.5864010810000764,
+   "prefill_tps": 2574.3804948906254
+  },
+  {
+   "target_tokens": 65536,
+   "prompt_tokens": 65336,
+   "cached_tokens": 0,
+   "ttft_s": 12.231574094003008,
+   "prefill_tps": 5341.585596250727
+  }
+ ]
+}
