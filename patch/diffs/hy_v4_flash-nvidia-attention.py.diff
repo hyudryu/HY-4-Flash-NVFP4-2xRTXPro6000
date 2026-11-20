@@ -1,0 +1,45 @@
+--- a/vllm/models/hy_v4_flash/nvidia/attention.py
++++ b/vllm/models/hy_v4_flash/nvidia/attention.py
+@@ -70,10 +70,15 @@
+         self.learnable_sink = config.learnable_sink
+         self.use_hpc_gated_mla = False
+         capability = current_platform.get_device_capability()
+-        if capability is None or capability.major not in (9, 10):
+-            raise NotImplementedError(
+-                "Flash MLA requires Hopper or Blackwell data-center GPUs"
+-            )
++        if capability is None or capability.major not in (9, 10, 12):
++            raise NotImplementedError("Flash MLA requires Hopper or Blackwell GPUs")
++        if capability.major == 12:
++            # Local SM120 patch (see vllm#68387): FlashInfer sparse MLA + sinks.
++            from .sm120 import FlashSM120SparseBackend, FlashSM120SWABackend
++
++            sparse_backend, swa_backend = FlashSM120SparseBackend, FlashSM120SWABackend
++        else:
++            sparse_backend, swa_backend = FlashSparseBackend, FlashSWABackend
+         if self.kv_lora_rank != 512 or self.qk_rope_head_dim != 64:
+             raise ValueError("Flash sparse MLA requires latent512 + rotary64 KV")
+         if (
+@@ -175,12 +180,18 @@
+             use_sparse=True,
+             indexer=self.indexer,
+             topk_indices_buffer=topk_indices_buffer,
+-            attn_backend=FlashSWABackend
+-            if self.is_window_layer
+-            else FlashSparseBackend,
+-            sliding_window=config.sliding_window if self.is_window_layer else None,
++            attn_backend=swa_backend if self.is_window_layer else sparse_backend,
++            # SM120: the window is enforced by FlashWindowIndexer, and the
++            # generic guard rejects fp8_ds_mla for sliding-window MLA, so set
++            # the window after construction; it is then only read for the
++            # KV-cache spec (sliding-window paging). Cf. vllm#68365.
++            sliding_window=config.sliding_window
++            if self.is_window_layer and capability.major != 12
++            else None,
+             sinks=self.learnable_sink_param,
+         )
++        if self.is_window_layer and capability.major == 12:
++            self.mla_attn.sliding_window = config.sliding_window
+         self.post_proj_norm = (
+             RMSNorm(config.hidden_size, config.rms_norm_eps)
+             if config.sandwich_norm

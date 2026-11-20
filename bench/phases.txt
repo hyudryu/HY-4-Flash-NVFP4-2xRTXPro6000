@@ -1,0 +1,16 @@
+warmup start 1795172091
+warmup end 1795172105
+prefill1 start 1795172105
+prefill1 end 1795172159
+prefill2 start 1795172159
+prefill2 end 1795172213
+decode start 1795172213
+decode end 1795172612
+context start 1795172612
+context end 1795173575
+prefill3 start 1795173602
+prefill3 end 1795173656
+prefill4 start 1795173656
+prefill4 end 1795173708
+prefill5 start 1795173708
+prefill5 end 1795173760

@@ -1,0 +1,15 @@
+--- a/vllm/models/hy_v4/nvidia/attention.py
++++ b/vllm/models/hy_v4/nvidia/attention.py
+@@ -592,6 +592,12 @@
+         if selected_cls.supports_sink():
+             return selected_cls
+ 
++        # Local SM120 patch (see vllm#68387): sink-capable FlashInfer SM120.
++        if selected_cls.get_name() == "FLASHINFER_MLA_SPARSE_SM120":
++            from vllm.models.hy_v4_flash.nvidia.sm120 import FlashSM120SparseBackend
++
++            return FlashSM120SparseBackend
++
+         from .flashmla_sparse import HYV4FlashMLASparseBackend
+ 
+         # Mirror how the selector derives the configuration-dependent inputs so

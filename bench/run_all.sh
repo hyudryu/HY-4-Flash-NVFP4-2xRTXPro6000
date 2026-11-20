@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Runs all benchmark phases while logging GPU power once per second.
+#   POOL=<KV pool tokens from the server log> ./run_all.sh
+set -euo pipefail
+cd "$(dirname "$0")"
+MODEL=${MODEL:-hy4-flash-nvfp4}
+POOL=${POOL:?set POOL to the "GPU KV cache size" from the server log}
+PREFILL_SIZES=${PREFILL_SIZES:-1024,4096,8192,16384,32768,65536,131072}
+CONTEXTS=${CONTEXTS:-8192,16384,32768,65536,131072}
+nvidia-smi --query-gpu=timestamp,index,power.draw,temperature.gpu,clocks.sm --format=csv,noheader,nounits -lms 1000 > power.csv &
+PW=$!
+trap 'kill $PW 2>/dev/null' EXIT
+: > phases.txt
+# JIT warm-up so the prefill sweep measures warm kernels (cold numbers are a startup artifact)
+echo "warmup start $(date +%s)" >> phases.txt
+python3 -I bench.py --model "$MODEL" --only prefill --prefill-sizes 4096,65536 --seed-offset 1 --out results-warmup.json
+echo "warmup end $(date +%s)" >> phases.txt
+for r in 1 2; do
+  echo "prefill$r start $(date +%s)" >> phases.txt
+  python3 -I bench.py --model "$MODEL" --only prefill --prefill-sizes "$PREFILL_SIZES" --seed-offset $((r + 1)) --out results-prefill-warm$r.json
+  echo "prefill$r end $(date +%s)" >> phases.txt
+done
+echo "decode start $(date +%s)" >> phases.txt
+python3 -I bench.py --model "$MODEL" --only decode --out results-decode.json
+echo "decode end $(date +%s)" >> phases.txt
+echo "context start $(date +%s)" >> phases.txt
+python3 -I bench.py --model "$MODEL" --only context --contexts "$CONTEXTS" --pool-tokens "$POOL" --seed-offset 5 --out results-context.json
+echo "context end $(date +%s)" >> phases.txt

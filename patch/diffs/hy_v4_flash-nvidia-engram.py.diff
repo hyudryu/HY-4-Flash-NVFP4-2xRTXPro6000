@@ -1,0 +1,27 @@
+--- a/vllm/models/hy_v4_flash/nvidia/engram.py
++++ b/vllm/models/hy_v4_flash/nvidia/engram.py
+@@ -261,8 +261,12 @@
+         expected = (
+             (self.num_embeddings, self.dim) if is_weight else (self.num_embeddings,)
+         )
++        # Local NVFP4 patch: pre-quantized checkpoints ship F32 per-row scales
++        # (kept in F32, no rounding to BF16).
+         dtypes = (
+-            (torch.bfloat16, torch.float8_e4m3fn) if is_weight else (torch.bfloat16,)
++            (torch.bfloat16, torch.float8_e4m3fn)
++            if is_weight
++            else (torch.bfloat16, torch.float32)
+         )
+         if tuple(value.shape) != expected or value.dtype not in dtypes:
+             raise ValueError(
+@@ -330,7 +334,9 @@
+         self._lookup(self.embedding.weight, indices, rows)
+         if self.fp8:
+             scales = torch.empty(
+-                indices.shape, dtype=torch.bfloat16, device=hashes.device
++                indices.shape,
++                dtype=self.embedding.weight_scale_inv.dtype,
++                device=hashes.device,
+             )
+             self._lookup(self.embedding.weight_scale_inv, indices, scales, scale=True)
+             return rows.float() * scales.float().unsqueeze(-1)

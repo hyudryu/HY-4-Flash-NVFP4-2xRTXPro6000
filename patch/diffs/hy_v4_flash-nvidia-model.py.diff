@@ -1,0 +1,138 @@
+--- a/vllm/models/hy_v4_flash/nvidia/model.py
++++ b/vllm/models/hy_v4_flash/nvidia/model.py
+@@ -28,7 +28,7 @@
+ 
+ _EXPERT_WEIGHT = re.compile(
+     r"(.*\.experts)\.(?:(\d+)\.)?(gate_proj|up_proj|down_proj|gate_up_proj)"
+-    r"(\.weight(?:_scale(?:_inv)?)?|_scale(?:_inv)?)?"
++    r"(\.weight(?:_scale(?:_inv|_2)?)?|_scale(?:_inv)?)?"
+ )
+ 
+ 
+@@ -91,6 +91,18 @@
+             raise ValueError(
+                 "Flash online quantization requires MoE-only fp8_per_block"
+             )
++    elif quantization == "modelopt_mixed":
++        # Local NVFP4 patch: W4A16_NVFP4 experts/MLPs + FP8_PB_WO projections.
++        quant = vllm_config.quant_config
++        algos = {
++            str(info.get("quant_algo", "")).upper()
++            for info in getattr(quant, "quantized_layers", {}).values()
++        }
++        if not algos or not algos <= {"W4A16_NVFP4", "FP8_PB_WO"}:
++            raise ValueError(
++                "HYV4 Flash modelopt_mixed supports only W4A16_NVFP4 and "
++                f"FP8_PB_WO layers, got {sorted(algos)}"
++            )
+     elif quantization is not None:
+         raise ValueError("HYV4 Flash supports only FP8 blockwise quantization")
+ 
+@@ -215,6 +227,10 @@
+             if engram is not None:
+                 assert self.engram_hash is not None
+                 layer, leaf = engram.groups()
++                if leaf == "multi_head_embedding.embedding.weight_scale":
++                    # Local NVFP4 patch: same per-row multiplier, other name.
++                    leaf = "multi_head_embedding.embedding.weight_scale_inv"
++                    name = f"layers.{layer}.engram_layer.{leaf}"
+                 if int(layer) + 1 not in (self.config.engram_layer_ids or ()):
+                     raise ValueError(f"Undeclared Engram checkpoint weight: {name}")
+                 if leaf == "lookup_table":
+@@ -248,7 +264,13 @@
+                     raise ValueError(f"Unknown Flash expert weight: {name}")
+                 parameter = parameters[target]
+                 if expert_id is None:
+-                    if value.ndim != 3 or value.shape[0] != self.config.num_experts:
++                    # Local NVFP4 patch: per-expert scalar scales (weight_scale_2,
++                    # input_scale) are stacked as 1-D [num_experts].
++                    scalar = suffix in ("_scale_2", ".input_scale", "input_scale")
++                    if (
++                        value.ndim != (1 if scalar else 3)
++                        or value.shape[0] != self.config.num_experts
++                    ):
+                         raise ValueError(
+                             f"Invalid packed expert shape for {name}: {value.shape}"
+                         )
+@@ -259,7 +281,11 @@
+                     if not 0 <= index < self.config.num_experts:
+                         raise ValueError(f"Expert index out of range: {name}")
+                     tensor = value[index] if expert_id is None else value
+-                    pieces = tensor.chunk(len(shards), dim=-2)
++                    pieces = (
++                        tensor.chunk(len(shards), dim=-2)
++                        if tensor.ndim >= 2
++                        else (tensor,) * len(shards)
++                    )
+                     for shard, piece in zip(shards, pieces):
+                         success = parameter.weight_loader(
+                             parameter,
+@@ -287,6 +313,16 @@
+                     continue
+                 local_head = int(head) - embedding.head_start
+                 name = f"{prefix}.lookup_per_head_norms.{local_head}.{leaf}"
++            if (
++                name.endswith(".weight_scale_inv")
++                and name not in parameters
++                and name.removesuffix("_inv") in parameters
++            ):
++                # Local NVFP4 patch: ModelOpt FP8_PB_WO names the same
++                # multiplicative 128x128 block scale `weight_scale`, 4-D.
++                name = name.removesuffix("_inv")
++                if parameters[name].ndim == 4 and value.ndim == 2:
++                    value = value[:, None, :, None]
+             if name not in parameters:
+                 raise ValueError(f"Unknown Flash checkpoint weight: {name}")
+             parameter = parameters[name]
+@@ -409,16 +445,51 @@
+                     raise ValueError(
+                         f"Missing Flash checkpoint weights: {sorted(missing)}"
+                     )
++                self._loaded_weights.update(self._nvfp4_weight_only_input_scales())
+                 DefaultModelLoader(self._load_config).track_weights_loading(
+                     self, self._loaded_weights.copy(), quantized=True
+                 )
+                 self.model.verify_loaded_parts()
++                self._unify_nvfp4_w13_scales()
+         finally:
+             self._weight_loading_depth -= 1
+             if outermost:
+                 self._seen_weights.clear()
+                 self._loaded_weights.clear()
+ 
++    def _nvfp4_weight_only_input_scales(self) -> set[str]:
++        """Local NVFP4 patch: a W4A16 (weight-only) checkpoint has no activation
++        scales; the Marlin path retires these parameters after loading."""
++        from vllm.model_executor.layers.quantization.modelopt import (
++            ModelOptNvFp4FusedMoE,
++        )
++
++        names: set[str] = set()
++        for name, module in self.named_modules():
++            method = getattr(module, "quant_method", None)
++            if not (isinstance(method, ModelOptNvFp4FusedMoE) and method.use_a16):
++                continue
++            for leaf in ("w13_input_scale", "w2_input_scale"):
++                param = getattr(module, leaf, None)
++                if param is not None:
++                    param.data.fill_(1.0)
++                    names.add(f"{name}.{leaf}")
++        return names
++
++    def _unify_nvfp4_w13_scales(self) -> None:
++        """Local NVFP4 patch: see nvfp4_fold.py."""
++        from vllm.model_executor.layers.quantization.modelopt import (
++            ModelOptNvFp4FusedMoE,
++        )
++
++        from .nvfp4_fold import unify_w13_global_scales
++
++        for name, module in self.named_modules():
++            if isinstance(
++                getattr(module, "quant_method", None), ModelOptNvFp4FusedMoE
++            ) and hasattr(module, "w13_weight_scale_2"):
++                unify_w13_global_scales(module, name)
++
+     def _target_weights(self, weights):
+         for name, value in weights:
+             if name in self._seen_weights:
