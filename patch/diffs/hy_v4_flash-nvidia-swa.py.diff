@@ -1,0 +1,88 @@
+--- a/vllm/models/hy_v4_flash/nvidia/swa.py
++++ b/vllm/models/hy_v4_flash/nvidia/swa.py
+@@ -8,11 +8,15 @@
+ from torch import nn
+ 
+ from vllm.forward_context import get_forward_context
++from vllm.logger import init_logger
+ from vllm.models.hy_v4.nvidia.flashmla_sparse import HYV4FlashMLASparseBackend
+ from vllm.v1.attention.backend import AttentionCGSupport
+ from vllm.v1.attention.backends.mla.flashmla_sparse import FlashMLASparseMetadataBuilder
+ 
+ 
++logger = init_logger(__name__)
++
++
+ class FlashSparseMetadataBuilder(FlashMLASparseMetadataBuilder):
+     _cudagraph_support = AttentionCGSupport.UNIFORM_BATCH
+ 
+@@ -52,6 +56,9 @@
+ 
+ 
+ class FlashWindowIndexer(nn.Module):
++    # V1: per-process cache of the current forward pass's window indices.
++    _shared: dict = {}
++
+     def __init__(self, window: int, topk_indices_buffer, attention_prefix: str):
+         super().__init__()
+         self.window = window
+@@ -70,6 +77,40 @@
+         meta: Any = metadata[self.attention_prefix]
+         if meta.num_actual_tokens == 0 or meta.seq_lens.numel() == 0:
+             return output.fill_(-1)
++        # V1: the window indices depend only on the batch metadata, not on the
++        # layer, so every SWA layer of one forward pass computes the same
++        # tensor (~30 tiny kernels each). Compute once per forward and copy.
++        # Keyed on the forward-context object (new per forward) and the layer
++        # metadata object, so a different pass or cache group never matches.
++        cache = FlashWindowIndexer._shared
++        context = get_forward_context()
++        key = (
++            self.window,
++            output.shape[0],
++            output.shape[1],
++            output.device,
++            meta.num_actual_tokens,
++        )
++        # The result is a pure function of (query_start_loc, seq_lens,
++        # num_actual_tokens, window, width); match on the tensor objects.
++        hit = (
++            cache.get("context") is context
++            and cache.get("starts") is meta.query_start_loc
++            and cache.get("seq_lens") is meta.seq_lens
++            and cache.get("key") == key
++        )
++        if not cache.get("logged") and cache.get("context") is context:
++            cache["logged"] = True
++            logger.info(
++                "Flash SWA window-index cache: hit=%s (starts same=%s, seq_lens "
++                "same=%s, key same=%s)",
++                hit,
++                cache.get("starts") is meta.query_start_loc,
++                cache.get("seq_lens") is meta.seq_lens,
++                cache.get("key") == key,
++            )
++        if hit:
++            return output.copy_(cache["buffer"][: output.shape[0]])
+         rows = torch.arange(output.shape[0], device=output.device)
+         starts = meta.query_start_loc
+         requests = torch.searchsorted(starts[1:], rows, right=True)
+@@ -80,4 +121,18 @@
+         output.copy_(
+             window_indices(torch.where(live, logical, -1), self.window, output.shape[1])
+         )
++        # One persistent full-size buffer (never allocated inside a CUDA graph
++        # capture after the first use); rows beyond this batch are not read.
++        buffer = cache.get("buffer")
++        full = self.topk_indices_buffer
++        if buffer is None or buffer.shape != full.shape or buffer.device != full.device:
++            buffer = torch.empty_like(full)
++        buffer[: output.shape[0]].copy_(output)
++        cache.update(
++            context=context,
++            starts=meta.query_start_loc,
++            seq_lens=meta.seq_lens,
++            key=key,
++            buffer=buffer,
++        )
+         return output
