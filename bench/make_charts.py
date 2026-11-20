@@ -8,7 +8,9 @@ from xml.sax.saxutils import escape
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "docs", "charts")
-MODEL_LABEL = "Hy4-flash-NVFP4 + FP8 DFly drafter"
+RESULTS = os.path.join(HERE, "results", os.environ.get("RESULTS", "v1"))      # charted run
+BASELINE = os.path.join(HERE, "results", "baseline")                          # dashed comparison
+MODEL_LABEL = "Hy4-flash-NVFP4 + FP8 DFly drafter, V1"
 LABEL_NUDGE = {}  # per-series (dx, dy) for the context chart end labels; tune after a render
 
 THEMES = {
@@ -52,11 +54,13 @@ def marker(kind, x, y, color, surface):
             f'fill="{color}" {ring} stroke-linejoin="round"/>')
 
 
-def line_chart(title, subtitle, xlabels, series, ylabel, theme, label_fmt="{:.0f}", label_nudge=None):
-    """series: list of (name, [y or None per x]). Missing points end the line."""
+def line_chart(title, subtitle, xlabels, series, ylabel, theme, label_fmt="{:.0f}", label_nudge=None,
+               ghosts=None, legend_note=None):
+    """ghosts: optional list of (series index, [y...]) drawn dashed, unlabelled (a comparison run)."""
     t = THEMES[theme]
     pw, ph = W - ML - MR, H - MT - MB
-    ymax, ystep = nice_max(max(v for _, ys in series for v in ys if v is not None) * 1.08)
+    allv = [v for _, ys in series for v in ys if v is not None] + [v for _, ys in (ghosts or []) for v in ys if v is not None]
+    ymax, ystep = nice_max(max(allv) * 1.08)
     xs = [ML + pw * (i + 0.5) / len(xlabels) for i in range(len(xlabels))]
     ypos = lambda v: MT + ph * (1 - v / ymax)
     o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" '
@@ -70,6 +74,9 @@ def line_chart(title, subtitle, xlabels, series, ylabel, theme, label_fmt="{:.0f
         o.append(marker(MARKERS[i], lx + 6, 72, t["series"][i], t["surface"]))
         o.append(f'<text x="{lx+17}" y="76" font-size="12.5" fill="{t["text2"]}">{escape(name)}</text>')
         lx += 30 + 7.2 * len(name)
+    if legend_note:
+        o.append(f'<line x1="{lx+6}" x2="{lx+30}" y1="72" y2="72" stroke="{t["muted"]}" stroke-width="2" stroke-dasharray="5 4"/>')
+        o.append(f'<text x="{lx+37}" y="76" font-size="12.5" fill="{t["text2"]}">{escape(legend_note)}</text>')
     # grid + y ticks
     v = 0.0
     while v <= ymax + 1e-9:
@@ -83,6 +90,10 @@ def line_chart(title, subtitle, xlabels, series, ylabel, theme, label_fmt="{:.0f
     for x, lab in zip(xs, xlabels):
         o.append(f'<text x="{x:.1f}" y="{MT+ph+22}" font-size="12" text-anchor="middle" fill="{t["text2"]}">{escape(lab)}</text>')
     o.append(f'<text x="{ML+pw/2:.1f}" y="{H-12}" font-size="11.5" text-anchor="middle" fill="{t["muted"]}">Concurrent requests</text>')
+    for i, ys in (ghosts or []):
+        pts = [(xs[j], ypos(v)) for j, v in enumerate(ys) if v is not None]
+        o.append(f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in pts)}" fill="none" '
+                 f'stroke="{t["series"][i]}" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round" opacity="0.75"/>')
     # lines, markers, then direct end labels spread apart so they never overprint
     ends = []
     for i, (name, ys) in enumerate(series):
@@ -121,24 +132,30 @@ def line_chart(title, subtitle, xlabels, series, ylabel, theme, label_fmt="{:.0f
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    dec = json.load(open(os.path.join(HERE, "results-decode.json")))["decode"]
-    ctx_doc = json.load(open(os.path.join(HERE, "results-context.json")))
+    dec = json.load(open(os.path.join(RESULTS, "results-decode.json")))["decode"]
+    ctx_doc = json.load(open(os.path.join(RESULTS, "results-context.json")))
     ctx, pool = ctx_doc["context"], ctx_doc["meta"]["pool_tokens"]
     levels = [1, 2, 4, 8]
     xl = [f"C{c}" for c in levels]
     get = lambda w, c, k: next(r[k] for r in dec if r["workload"] == w and r["concurrency"] == c)
+    base = None
+    if os.path.abspath(RESULTS) != os.path.abspath(BASELINE) and os.path.exists(os.path.join(BASELINE, "results-decode.json")):
+        base = json.load(open(os.path.join(BASELINE, "results-decode.json")))["decode"]
+    bget = lambda w, c, k: next(r[k] for r in base if r["workload"] == w and r["concurrency"] == c)
+    ghost = lambda k: [(i, [bget(w, c, k) for c in levels]) for i, (w, _) in enumerate(wl)] if base else None
+    note = "baseline (dashed)" if base else None
     wl = [("prose", "Prose"), ("coding", "Coding"), ("counting", "Counting")]
     charts = {
         "decode-aggregate": dict(
             title="Aggregate decode throughput vs concurrency",
             subtitle=f"{MODEL_LABEL} · 2× RTX PRO 6000 @ 450 W · TP2 · short prompts, 1,024 output tokens",
             series=[(n, [get(w, c, "steady_aggregate_tps") for c in levels]) for w, n in wl],
-            ylabel="Output tokens/s (all requests)"),
+            ylabel="Output tokens/s (all requests)", ghosts=ghost("steady_aggregate_tps"), legend_note=note),
         "decode-per-user": dict(
             title="Per-user decode speed vs concurrency",
             subtitle="Median request, tokens after first token ÷ time after first token · same runs as aggregate",
             series=[(n, [get(w, c, "per_req_decode_tps_median") for c in levels]) for w, n in wl],
-            ylabel="Output tokens/s per request"),
+            ylabel="Output tokens/s per request", ghosts=ghost("per_req_decode_tps_median"), legend_note=note),
     }
     def ctx_name(n):
         return f"{round(n / 1000)}K ctx" if n % 1024 else f"{n // 1024}K ctx"
@@ -156,7 +173,8 @@ def main():
             path = os.path.join(OUT, f"{key}-{theme}.svg")
             with open(path, "w") as f:
                 f.write(line_chart(spec["title"], spec["subtitle"], xl, spec["series"],
-                                   spec["ylabel"], theme, label_nudge=spec.get("label_nudge")))
+                                   spec["ylabel"], theme, label_nudge=spec.get("label_nudge"),
+                                   ghosts=spec.get("ghosts"), legend_note=spec.get("legend_note")))
             print("wrote", os.path.relpath(path, HERE))
 
 
