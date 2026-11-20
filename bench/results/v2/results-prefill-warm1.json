@@ -1,0 +1,65 @@
+{
+ "meta": {
+  "url": "http://localhost:8000",
+  "model": "hy4-flash",
+  "time": "2026-11-20T08:04:52-0800",
+  "tokens_per_filler_word": 1.948,
+  "continuous_usage_stats": true,
+  "max_tokens": 1024,
+  "context_max_tokens": 512,
+  "rounds": 2,
+  "pool_tokens": 0,
+  "seed_offset": 2
+ },
+ "prefill": [
+  {
+   "target_tokens": 1024,
+   "prompt_tokens": 1029,
+   "cached_tokens": 0,
+   "ttft_s": 1.0377048349982942,
+   "prefill_tps": 991.6114537537945
+  },
+  {
+   "target_tokens": 4096,
+   "prompt_tokens": 4069,
+   "cached_tokens": 0,
+   "ttft_s": 0.8492339699987497,
+   "prefill_tps": 4791.376868739708
+  },
+  {
+   "target_tokens": 8192,
+   "prompt_tokens": 8085,
+   "cached_tokens": 0,
+   "ttft_s": 2.1894154239998898,
+   "prefill_tps": 3692.766530907753
+  },
+  {
+   "target_tokens": 16384,
+   "prompt_tokens": 16361,
+   "cached_tokens": 0,
+   "ttft_s": 2.872834255998896,
+   "prefill_tps": 5695.072719853521
+  },
+  {
+   "target_tokens": 32768,
+   "prompt_tokens": 32795,
+   "cached_tokens": 0,
+   "ttft_s": 5.781904702002066,
+   "prefill_tps": 5672.0063180294665
+  },
+  {
+   "target_tokens": 65536,
+   "prompt_tokens": 65255,
+   "cached_tokens": 0,
+   "ttft_s": 12.13392075199954,
+   "prefill_tps": 5377.898977067794
+  },
+  {
+   "target_tokens": 131072,
+   "prompt_tokens": 130772,
+   "cached_tokens": 0,
+   "ttft_s": 32.18890169500082,
+   "prefill_tps": 4062.6424983089705
+  }
+ ]
+}

@@ -8,6 +8,8 @@ from typing import Any
 
 import regex as re
 import torch
+
+from vllm.models.hy_v4.nvidia.mrope import set_token_rope
 from torch import nn
 
 from vllm.config import VllmConfig
@@ -206,6 +208,14 @@ class HYV4FlashModel(HYV4Model):
             layer_id - 1: index
             for index, layer_id in enumerate(self.config.engram_layer_ids)
         }
+        # V2: per-token M-RoPE cos/sin rows, once per pass for each distinct
+        # rotary table (sliding and sparse layers use different thetas).
+        seen_rope = set()
+        for layer in self.layers:
+            rope = layer.self_attn.rotary_emb
+            if id(rope) not in seen_rope:
+                seen_rope.add(id(rope))
+                set_token_rope(rope, positions, hidden)
         for index, layer in enumerate(self.layers):
             if index in hash_indices:
                 hidden = layer.hc_attn_layer.prepare_input(hidden)

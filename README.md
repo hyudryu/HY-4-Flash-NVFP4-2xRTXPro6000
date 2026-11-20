@@ -2,21 +2,22 @@
 
 Serving the community NVFP4 build [**Avifenesh/Hy4-flash-NVFP4**](https://huggingface.co/Avifenesh/Hy4-flash-NVFP4) of Tencent's Hy4-flash (220B MoE, 512 experts / 16 active, sparse MLA + sliding-window attention, Engram n-gram memory) with vLLM. It runs on two **RTX PRO 6000 Blackwell Workstation** GPUs (SM120, 96 GB each, power-limited to **450 W**) at tensor parallel 2, with a **512K context window**. Speculative decoding uses **Tencent's own FP8 DFly drafter** from [tencent/Hy4-flash-FP8](https://huggingface.co/tencent/Hy4-flash-FP8).
 
-> **Status: V1.** The first optimization pass over the [baseline](#v1-vs-baseline): decode is 7–46% faster and prefill about 5% faster, with the same weights and no new quantization. The FP8 sibling setup is at [hyudryu/HY-4-Flash-FP8-2xRTXPro6000](https://github.com/hyudryu/HY-4-Flash-FP8-2xRTXPro6000).
+> **Status: V2.** Two optimization passes over the baseline ([V1](#v1-vs-baseline), [V2](#v2-vs-v1)): decode is 23–65% faster than the baseline in the short-prompt matrix and prefill about 10% faster, with the same weights and no new quantization. The FP8 sibling setup is at [hyudryu/HY-4-Flash-FP8-2xRTXPro6000](https://github.com/hyudryu/HY-4-Flash-FP8-2xRTXPro6000).
 
-The stock `vllm/vllm-openai:hy4-flash` image refuses this model on SM120 and can't load this checkpoint. This repo has an eight-file overlay patch that fixes both, the launch recipe, and measured speeds.
+The stock `vllm/vllm-openai:hy4-flash` image refuses this model on SM120 and can't load this checkpoint. This repo has a ten-file overlay patch that fixes both, the launch recipe, and measured speeds.
 
 ## TL;DR
 
-| | Baseline | **V1** | FP8 ([sibling](https://github.com/hyudryu/HY-4-Flash-FP8-2xRTXPro6000)) |
-|---|---|---|---|
-| Decode, 1 user: prose / coding / counting | 75 / 103 / 132 | **92 / 120 / 142** tok/s | 62 / 87 / 106 |
-| Decode, 8 users aggregate: prose / coding / counting | 287 / 372 / 439 | **416 / 519 / 610** tok/s | 211 / 274 / 347 |
-| Decode at 128K context, 8 users aggregate | 290 | **396 tok/s** | — (didn't fit) |
-| Prefill (median, 16K–64K) | ~5,130–5,155 | **~5,389–5,406 tok/s** | ~5,200–5,370 |
-| Decode step latency, 1 user | 26.5 ms | **20.3 ms** | — |
-| Context window / KV pool | same | 524,288 / 3.45M tokens | 262,144 / 308K tokens |
-| Weights per GPU / pinned host RAM | same | 50.1 GiB / ~62 GiB | 80.8 GiB / ~118 GiB |
+| | Baseline | V1 | **V2** | FP8 ([sibling](https://github.com/hyudryu/HY-4-Flash-FP8-2xRTXPro6000)) |
+|---|---|---|---|---|
+| Decode, 1 user: prose / coding / counting | 75 / 103 / 132 | 92 / 120 / 142 | **117 / 159 / 162** tok/s | 62 / 87 / 106 |
+| Decode, 8 users aggregate: prose / coding / counting | 287 / 372 / 439 | 416 / 519 / 610 | **474 / 583 / 670** tok/s | 211 / 274 / 347 |
+| Decode at 128K context, 8 users aggregate | 290 | 396 | **461 tok/s** | — (didn't fit) |
+| Prefill (median, 16K–64K) | ~5,130–5,155 | ~5,389–5,406 | **~5,666–5,672 tok/s** | ~5,200–5,370 |
+| Decode step latency, 1 user | 26.5 ms | 20.3 ms | **16.4 ms** | — |
+| GPU kernel launches per decode step | ~10,700 | ~7,800 | **~4,200** | — |
+| Context window / KV pool | 524,288 / 3.45M tokens | same | same | 262,144 / 308K tokens |
+| Weights per GPU / pinned host RAM | 50.1 GiB / ~62 GiB | same | same | 80.8 GiB / ~118 GiB |
 
 Decode numbers include DFly speculative decoding and count reasoning tokens. Sampling is greedy (temperature 0).
 
@@ -36,6 +37,28 @@ V1 is the baseline plus four changes. None changes the weights or adds quantizat
 **Speculative decoding:** per-draft-token acceptance rose from 25.9% to **38.6%** over the full benchmark, because the low-yield positions are no longer drafted. Tokens per step went from 2.29 to 2.16, while each step got 23–28% cheaper. In the baseline, acceptance by position was 58% / 33% / 19% / 12% / 8%. A sweep of 2, 3, 4, 5 and 8 draft tokens put 3 on top at both 1 and 8 users.
 
 **Output:** changes 2–4 don't alter the model's math. The fused RMSNorm computes the same function but rounds once instead of twice, so text can diverge from the baseline after a few dozen tokens. Baseline-vs-baseline runs diverge the same way. The smoke tests still pass.
+
+## V2 vs V1
+
+V2 is V1 plus two kernel fusions. Neither changes the weights, the draft settings, or any precision.
+
+| # | Change | What it does | Effect |
+|---|---|---|---|
+| 1 | **Fused rotary embedding** (`attention.py`, `model.py`) | Every layer applied M-RoPE to q and k as ~36 tiny torch kernels (select cos/sin per axis, strided multiply/add, stack, concatenate). The per-token cos/sin rows depend only on the positions, so they're now built once per forward pass for each of the two rotary tables, and vLLM's C rotary kernel rotates q and k in place in one launch. This is the path the base HY4 model already uses. | ~1,700 fewer kernel launches per step; decode step 20.3 → 18.4 ms |
+| 2 | **Fused IndexPool kernels** (`indexpool_fused.py`, `compressed_indexer.py`) | In each of the 12 sparse layers, the compressed indexer rotated, Walsh–Hadamard-transformed and FP8-quantized its keys and its queries with ~90 tiny kernels per call (twice per layer), then expanded the selected groups into token indices with ~35 more. Two Triton kernels now do each job in one launch. | ~1,900 fewer launches per step; 18.4 → 16.4 ms |
+
+**How it was found:** a fresh profile of V1 showed a sliding-window layer costing about 405 µs of GPU time and a sparse layer about 700 µs. Most of the sparse layers' extra was ~240 one-microsecond glue kernels in the indexer. After V2 those are about 335 µs and 460 µs, and a decode step is about 4,200 kernel launches, down from 7,800 in V1 and 10,700 in the baseline. The step is now dominated by GEMMs that are bound by memory bandwidth.
+
+**Output:**
+- **The IndexPool kernels are bit-identical to the code they replace.** [`tests/test_indexpool_fused.py`](tests/test_indexpool_fused.py) compares quantized bytes, scales and expanded indices against the reference implementation: 0 mismatches. Getting there needed three details: the same butterfly order, a guard against the compiler fusing multiply-add into FMA, and an explicit round-to-nearest-even FP8 cast.
+- **The fused rotary kernel is not bit-identical; it's more accurate.** The original rounded to BF16 three times per element (two products, then the sum), and the C kernel rounds once. Against an exact reference, the fused result is the correctly rounded BF16 value 100% of the time, versus 69% for the original ([`tests/test_rope_fused.py`](tests/test_rope_fused.py)). As with V1's fused RMSNorm, sampled text can diverge from V1 after a few dozen tokens.
+- Smoke tests pass, and two-needle recall is exact at 6.6K, 68K and 206K tokens.
+
+**Acceptance was investigated and is unchanged.** The same FP8 drafter was measured against the FP8 target on this machine. Its first-draft-token acceptance there (54% prose / 68% coding / 73% counting) matches the NVFP4 target (55% / 70% / 73%), and so do positions 2–5. So the 4-bit expert weights are not what limits acceptance; the limit is the drafter itself, or the SM120 FP8 KV path that both targets share. Each later position is accepted at a roughly constant conditional rate (about 45% prose, 65% coding, 73% counting), so there's no setting that raises it losslessly.
+
+**Measured and ruled out:**
+- DeepGEMM's split-K reduce looked as expensive as its GEMM in the trace (0.9 ms per step). It's launched early and waits on the GEMM, so that time is overlap, not cost.
+- The LM head (3 draft passes and 1 target pass, about 1 ms per step) reads the whole vocabulary matrix each pass and is bound by memory bandwidth. The draft passes can't be batched, because each depends on the previous draft token.
 
 ## Hardware and software
 
@@ -105,7 +128,7 @@ cd HY-4-Flash-NVFP4-2xRTXPro6000
 docker logs -f hy4-flash-nvfp4
 ```
 
-[`recipe/run.sh`](recipe/run.sh) bind-mounts the eight patch files read-only over the image and runs:
+[`recipe/run.sh`](recipe/run.sh) bind-mounts the ten patch files read-only over the image and runs:
 
 ```bash
 vllm serve Avifenesh/Hy4-flash-NVFP4 --revision f9eac06cf022cfd3dc2e8ed423922466b2adcd87 \
@@ -136,12 +159,13 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
 
 ### Optional: running under a manager (SparkDeck, etc.)
 
-Use the same flags, with the eight files as read-only mounts. Each source is `/path/to/repo/patch/vllm/models/<file>`; each target is `/usr/local/lib/python3.12/dist-packages/vllm/models/<file>`, for `<file>` in:
+Use the same flags, with the ten files as read-only mounts. Each source is `/path/to/repo/patch/vllm/models/<file>`; each target is `/usr/local/lib/python3.12/dist-packages/vllm/models/<file>`, for `<file>` in:
 
 ```
 hy_v4_flash/nvidia/sm120.py      hy_v4_flash/nvidia/attention.py   hy_v4/nvidia/attention.py
 hy_v4_flash/nvidia/model.py      hy_v4_flash/nvidia/engram.py      hy_v4_flash/nvidia/nvfp4_fold.py
-hy_v4/dfly_config.py             hy_v4_flash/nvidia/swa.py
+hy_v4/dfly_config.py             hy_v4_flash/nvidia/swa.py         hy_v4_flash/nvidia/compressed_indexer.py
+hy_v4_flash/nvidia/indexpool_fused.py
 ```
 
 In SparkDeck, cloning an FP8 deployment carries over its DFly launch controls. Make sure the speculative config is the one above, and set its draft-token control to 3.
@@ -188,6 +212,14 @@ Files are in [`patch/`](patch/), and diffs against the image are in [`patch/diff
 
 The fused RMSNorm is a launch flag (`--ir-op-priority`), not a patch.
 
+**V2 performance:**
+
+9. **`hy_v4_flash/nvidia/attention.py` and `model.py` (rotary):** `HYV4FlashModel.forward` builds the per-token M-RoPE cos/sin rows once per pass for each distinct rotary table; the attention forward then calls vLLM's C rotary kernel on the strided q and k views.
+10. **`hy_v4_flash/nvidia/indexpool_fused.py` (new) and `compressed_indexer.py`:**
+    - `rotate_fwht_quantize`: rotation, the 7-stage Walsh–Hadamard butterfly, the power-of-two scale and the FP8 E4M3 cast in one Triton kernel. It also writes the query bytes straight into the zero-padded 32-head layout the scoring kernel wants.
+    - `expand_groups_into`: selected group ids to token indices with stable compaction, written straight into the top-k buffer.
+    - Anything outside the tested layout (non-interleaved M-RoPE, a rotary width other than 64, a different top-k width) falls back to the original code.
+
 ### Accuracy notes
 
 - **Experts are third-party NVFP4** (weight-only, data-free). The Engram tables are FP8 per row.
@@ -196,7 +228,7 @@ The fused RMSNorm is a launch flag (`--ir-op-priority`), not a patch.
 - Smoke tests:
   - 17×23 = 391; Canberra; a correct palindrome function; 14:35 + 2 h 50 m = 17:25.
   - No repetition loops.
-  - Exact recall at 4,850 tokens and at **448,719 tokens** (two codes, start and middle).
+  - Exact recall at 4,850 tokens and at **448,719 tokens** (two codes, start and middle). V2 was rechecked at 6.6K, 68K and 206K tokens.
 - **No full-benchmark evaluation (GSM8K, GPQA, …) has been run yet.**
 
 ## Benchmarks
@@ -204,92 +236,92 @@ The fused RMSNorm is a launch flag (`--ir-op-priority`), not a patch.
 Method: [`bench/bench.py`](bench/bench.py), the same as the FP8 repo, plus a per-run `--seed-offset` so the 3.4M-token prefix cache can never serve a repeated prompt.
 - Sampling is greedy, and token counts come from the server's usage stats.
 - Decode tok/s is measured only while every request in the batch is decoding, so prefills are excluded. "Per user" is the median request's tokens after its first token divided by time after its first token.
-- Raw results, run logs, and 1 Hz GPU power logs are in [`bench/results/v1/`](bench/results/v1/) and [`bench/results/baseline/`](bench/results/baseline/).
+- Raw results, run logs, and 1 Hz GPU power logs are in [`bench/results/`](bench/results/): `baseline/`, `v1/` and `v2/`. The tables are generated by [`bench/make_tables.py`](bench/make_tables.py); the change column compares V2 with the baseline.
 
 ### Prompt processing (prefill), single request, warm
 
-| Prompt tokens | Baseline tok/s | V1 tok/s | Change | Time to first token (s) |
-|---|---|---|---|---|
-| 1,029 | 2,860 | 2,859 | -0% | 0.36 |
-| 4,069 | 4,521 | 4,660 | +3% | 0.87 |
-| 8,085 | 4,845 | 5,095 | +5% | 1.61 |
-| 16,361 | 5,133 | 5,406 | +5% | 3.02 |
-| 32,795 | 5,155 | 5,389 | +5% | 6.09 |
-| 65,255 | 5,138 | 5,405 | +5% | 12.12 |
-| 130,772 | 4,926 | 5,168 | +5% | 25.27 |
+| Prompt tokens | Baseline tok/s | V1 tok/s | V2 tok/s | Change | Time to first token (s) |
+|---|---|---|---|---|---|
+| 1,029 | 2,860 | 2,859 | **3,013** | +5% | 0.34 |
+| 4,069 | 4,521 | 4,660 | **4,791** | +6% | 0.85 |
+| 8,085 | 4,845 | 5,095 | **5,306** | +10% | 1.53 |
+| 16,361 | 5,133 | 5,406 | **5,666** | +10% | 2.89 |
+| 32,795 | 5,155 | 5,389 | **5,672** | +10% | 5.78 |
+| 65,255 | 5,138 | 5,405 | **5,666** | +10% | 11.57 |
+| 130,772 | 4,926 | 5,168 | **5,387** | +9% | 24.24 |
 
-Median of **5 sweeps** after a JIT warm-up, for both V1 and the baseline; per-run data is in `bench/results/*/results-prefill-warm{1..5}.json`. Prefill was not the target of V1; the gain comes from the same kernel fusions.
+Median of **5 sweeps** after a JIT warm-up for every version; per-run data is in `bench/results/*/results-prefill-warm{1..5}.json`. Prefill hasn't been a target yet; the gain comes from the same kernel fusions.
 
 ### Decode at concurrency 1 / 2 / 4 / 8 (short prompts, 1,024 output tokens)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/charts/decode-aggregate-dark.svg">
-  <img alt="Aggregate decode throughput vs concurrency, V1 solid and baseline dashed: V1 prose 92, 161, 273, 416 tok/s; coding 120, 202, 328, 519; counting 142, 239, 394, 610 at C1, C2, C4, C8" src="docs/charts/decode-aggregate-light.svg">
+  <img alt="Aggregate decode throughput vs concurrency, V2 solid and baseline dashed: V2 prose 117, 197, 316, 474 tok/s; coding 159, 251, 398, 583; counting 162, 283, 467, 670 at C1, C2, C4, C8" src="docs/charts/decode-aggregate-light.svg">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/charts/decode-per-user-dark.svg">
-  <img alt="Per-user decode speed vs concurrency, V1 solid and baseline dashed: V1 prose 92, 80, 68, 52 tok/s; coding 120, 103, 83, 66; counting 142, 121, 99, 77 at C1, C2, C4, C8" src="docs/charts/decode-per-user-light.svg">
+  <img alt="Per-user decode speed vs concurrency, V2 solid and baseline dashed: V2 prose 117, 98, 79, 60 tok/s; coding 159, 126, 100, 73; counting 162, 142, 120, 84 at C1, C2, C4, C8" src="docs/charts/decode-per-user-light.svg">
 </picture>
 
-| Workload | C | Baseline tok/s | V1 tok/s | Change | Per-user tok/s | TTFT p50 (s) |
-|---|---|---|---|---|---|---|
-| Prose (short story) | 1 | 75.3 | **92.1** | +22% | 92.1 | 0.14 |
-|  | 2 | 123.1 | **160.9** | +31% | 80.3 | 0.56 |
-|  | 4 | 193.5 | **273.1** | +41% | 67.8 | 0.44 |
-|  | 8 | 286.7 | **416.0** | +45% | 52.1 | 0.93 |
-| Coding (Python + tests) | 1 | 103.1 | **120.2** | +17% | 120.2 | 0.15 |
-|  | 2 | 157.2 | **201.7** | +28% | 102.9 | 0.25 |
-|  | 4 | 243.0 | **328.0** | +35% | 83.3 | 0.57 |
-|  | 8 | 371.6 | **519.1** | +40% | 65.9 | 0.62 |
-| Counting (1…400 in words) | 1 | 132.4 | **141.7** | +7% | 141.7 | 0.16 |
-|  | 2 | 224.3 | **239.2** | +7% | 120.9 | 0.21 |
-|  | 4 | 312.5 | **393.5** | +26% | 99.2 | 0.50 |
-|  | 8 | 439.4 | **610.4** | +39% | 77.2 | 0.70 |
+| Workload | C | Baseline tok/s | V1 tok/s | V2 tok/s | Change | Per-user tok/s | TTFT p50 (s) |
+|---|---|---|---|---|---|---|---|
+| Prose (short story) | 1 | 75.3 | 92.1 | **117.4** | +56% | 117.4 | 0.13 |
+|  | 2 | 123.1 | 160.9 | **196.8** | +60% | 98.2 | 0.50 |
+|  | 4 | 193.5 | 273.1 | **316.2** | +63% | 79.0 | 0.53 |
+|  | 8 | 286.7 | 416.0 | **473.6** | +65% | 59.5 | 0.50 |
+| Coding (Python + tests) | 1 | 103.1 | 120.2 | **158.8** | +54% | 158.8 | 0.13 |
+|  | 2 | 157.2 | 201.7 | **251.4** | +60% | 126.4 | 0.21 |
+|  | 4 | 243.0 | 328.0 | **397.8** | +64% | 100.1 | 0.53 |
+|  | 8 | 371.6 | 519.1 | **583.2** | +57% | 73.4 | 1.00 |
+| Counting (1…400 in words) | 1 | 132.4 | 141.7 | **162.4** | +23% | 162.4 | 0.13 |
+|  | 2 | 224.3 | 239.2 | **282.5** | +26% | 142.3 | 0.19 |
+|  | 4 | 312.5 | 393.5 | **466.8** | +49% | 119.7 | 0.48 |
+|  | 8 | 439.4 | 610.4 | **669.7** | +52% | 84.1 | 0.67 |
 
-Medians of 2 rounds per cell. Solid lines in the charts are V1 and dashed lines are the baseline. Across the whole V1 benchmark the FP8 drafter's acceptance was **38.6% per draft token**, about **2.16 tokens per decode step** with 3 drafted.
+Medians of 2 rounds per cell. Solid lines in the charts are V2 and dashed lines are the baseline. Across the whole V2 benchmark the FP8 drafter's acceptance was **38.5% per draft token** (60% / 35% / 21% by position), about **2.16 tokens per decode step** with 3 drafted, the same as V1.
 
 ### Decode at context 8K → 128K (prose task after a unique N-token document, 512 output tokens)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/charts/decode-context-dark.svg">
-  <img alt="Aggregate decode throughput at long context (V1): all five context lengths from 8K to 128K track each other, about 92-96 tok/s at C1 and 396-434 tok/s at C8" src="docs/charts/decode-context-light.svg">
+  <img alt="Aggregate decode throughput at long context (V2): all five context lengths from 8K to 128K track each other, about 103-127 tok/s at C1 and 461-485 tok/s at C8" src="docs/charts/decode-context-light.svg">
 </picture>
 
-| Context | C | Baseline tok/s | V1 tok/s | Change | Per-user tok/s | TTFT p50 (s) |
-|---|---|---|---|---|---|---|
-| 8K | 1 | 79.3 | **96.1** | +21% | 96.1 | 1.6 |
-| 8K | 2 | 125.6 | **150.6** | +20% | 68.0 | 2.3 |
-| 8K | 4 | 197.8 | **265.6** | +34% | 56.7 | 5.4 |
-| 8K | 8 | 302.9 | **433.6** | +43% | 36.8 | 8.4 |
-| 16K | 1 | 82.1 | **92.3** | +13% | 92.3 | 3.0 |
-| 16K | 2 | 123.6 | **167.4** | +35% | 76.1 | 5.3 |
-| 16K | 4 | 193.0 | **266.3** | +38% | 49.5 | 9.0 |
-| 16K | 8 | 307.3 | **427.0** | +39% | 28.4 | 15.0 |
-| 32K | 1 | 84.5 | **91.6** | +8% | 91.6 | 6.0 |
-| 32K | 2 | 129.8 | **155.6** | +20% | 59.2 | 9.0 |
-| 32K | 4 | 192.0 | **261.6** | +36% | 31.9 | 15.0 |
-| 32K | 8 | 288.0 | **404.7** | +41% | 17.3 | 27.8 |
-| 64K | 1 | 65.5 | **93.8** | +43% | 93.8 | 12.7 |
-| 64K | 2 | 119.2 | **151.3** | +27% | 51.6 | 18.6 |
-| 64K | 4 | 207.3 | **268.5** | +29% | 20.2 | 30.5 |
-| 64K | 8 | 290.8 | **424.0** | +46% | 9.9 | 55.1 |
-| 128K | 1 | 73.9 | **91.5** | +24% | 91.5 | 26.1 |
-| 128K | 2 | 121.0 | **154.6** | +28% | 45.4 | 38.4 |
-| 128K | 4 | 176.5 | **247.5** | +40% | 11.8 | 64.2 |
-| 128K | 8 | 290.3 | **395.8** | +36% | 5.2 | 116.1 |
+| Context | C | Baseline tok/s | V1 tok/s | V2 tok/s | Change | Per-user tok/s | TTFT p50 (s) |
+|---|---|---|---|---|---|---|---|
+| 8K | 1 | 79.3 | 96.1 | **112.5** | +42% | 112.5 | 1.6 |
+| 8K | 2 | 125.6 | 150.6 | **194.6** | +55% | 98.1 | 2.9 |
+| 8K | 4 | 197.8 | 265.6 | **326.3** | +65% | 68.2 | 4.6 |
+| 8K | 8 | 302.9 | 433.6 | **485.3** | +60% | 43.2 | 8.2 |
+| 16K | 1 | 82.1 | 92.3 | **117.4** | +43% | 117.4 | 2.9 |
+| 16K | 2 | 123.6 | 167.4 | **183.5** | +48% | 82.0 | 5.1 |
+| 16K | 4 | 193.0 | 266.3 | **316.1** | +64% | 57.0 | 8.6 |
+| 16K | 8 | 307.3 | 427.0 | **483.7** | +57% | 29.4 | 14.3 |
+| 32K | 1 | 84.5 | 91.6 | **103.2** | +22% | 103.2 | 5.7 |
+| 32K | 2 | 129.8 | 155.6 | **195.6** | +51% | 72.7 | 8.6 |
+| 32K | 4 | 192.0 | 261.6 | **317.6** | +65% | 35.0 | 14.3 |
+| 32K | 8 | 288.0 | 404.7 | **468.0** | +62% | 18.7 | 26.6 |
+| 64K | 1 | 65.5 | 93.8 | **126.5** | +93% | 126.5 | 12.2 |
+| 64K | 2 | 119.2 | 151.3 | **196.9** | +65% | 60.3 | 17.7 |
+| 64K | 4 | 207.3 | 268.5 | **306.9** | +48% | 22.0 | 29.5 |
+| 64K | 8 | 290.8 | 424.0 | **470.0** | +62% | 10.2 | 53.9 |
+| 128K | 1 | 73.9 | 91.5 | **108.0** | +46% | 108.0 | 24.9 |
+| 128K | 2 | 121.0 | 154.6 | **181.8** | +50% | 54.8 | 37.1 |
+| 128K | 4 | 176.5 | 247.5 | **299.1** | +70% | 12.6 | 61.2 |
+| 128K | 8 | 290.3 | 395.8 | **460.7** | +59% | 5.5 | 112.2 |
 
-Thanks to sparse attention, aggregate decode speed barely depends on context: about 396–434 tok/s at C8 from 8K to 128K. Per-user tok/s at higher C is much lower than aggregate ÷ C, because each request's decode overlaps the other requests' prefills. TTFT at high C is dominated by those queued prefills: 8 × 128K is about 1M prompt tokens.
+Thanks to sparse attention, aggregate decode speed barely depends on context: about 461–485 tok/s at C8 from 8K to 128K. Per-user tok/s at higher C is much lower than aggregate ÷ C, because each request's decode overlaps the other requests' prefills. TTFT at high C is dominated by those queued prefills: 8 × 128K is about 1M prompt tokens.
 
 ### Power (450 W limit per GPU, 1 Hz `nvidia-smi` samples)
 
 | Phase | GPU 0 avg / max | GPU 1 avg / max | Peak temp (GPU 0 / 1) |
 |---|---|---|---|
-| Prefill sweeps (5×, warm) | 392 / 436 W | 400 / 444 W | 69 / 81 °C |
-| Decode, C1–C8 | 330 / 427 W | 345 / 429 W | 67 / 78 °C |
-| Long-context decode | 405 / 432 W | 408 / 453 W | 69 / 82 °C |
+| Prefill sweeps (5×, warm) | 398 / 442 W | 399 / 446 W | 69 / 81 °C |
+| Decode, C1–C8 | 370 / 415 W | 385 / 429 W | 63 / 77 °C |
+| Long-context decode | 417 / 439 W | 410 / 465 W | 70 / 83 °C |
 
-V1 run. Idle is about 20–30 W per GPU with the model loaded. GPU 1 is the top card and runs about 12 °C hotter. The baseline's power log is in `bench/results/baseline/`.
+V2 run. Decode draws more than it did in V1 (330 / 345 W average). Idle is about 20–30 W per GPU with the model loaded. GPU 1 is the top card and runs about 12 °C hotter. Power logs for the other versions are in their `bench/results/` folders.
 
 ### Reproduce
 
@@ -297,20 +329,28 @@ V1 run. Idle is about 20–30 W per GPU with the model loaded. GPU 1 is the top 
 cd bench
 POOL=<KV pool tokens from the server log> OUT=results/myrun ./run_all.sh   # warm-up, 5 prefill sweeps, decode matrix, context sweep, GPU power log
 RESULTS=myrun python3 make_charts.py   # regenerates docs/charts/*.svg; draws results/baseline dashed
+python3 make_tables.py baseline v1 v2 myrun   # the README tables, oldest run on the left
+```
+
+Kernel exactness tests, run inside the image with this repo mounted at `/repo`:
+
+```bash
+docker run --rm --gpus all -v "$PWD:/repo" --entrypoint python3 vllm/vllm-openai:hy4-flash /repo/tests/test_indexpool_fused.py
+docker run --rm --gpus all -v "$PWD:/repo" --entrypoint python3 vllm/vllm-openai:hy4-flash /repo/tests/test_rope_fused.py
 ```
 
 ## Optimization targets
 
-After V1 a decode step is about 20 ms and still about 8,000 kernel launches. Candidates for V2, all lossless:
-- **Rotary embedding:** about 36 tiny kernels per layer (cos/sin lookup, compares, multiply/add, stack). The position-only part can be computed once per pass, and the rotation fused into one kernel.
-- **LM head:** it runs as 5 separate full-matrix FP32 passes per step, about 1.2 ms. A single batched GEMM should cost about a quarter of that.
-- **Small dense BF16 GEMMs:** about 5 ms per step in ~400 cuBLAS calls of a few tokens each (shared experts, latent projections, `q_a`/`kv` projections). Look at batching or fusing them with their neighbours.
-- **Hyper-connection and gating glue:** the remaining elementwise ops around iHC and the gated-MLA sigmoid/multiply.
+After V2 a decode step is about 16.4 ms and 4,200 kernel launches at 1 user (about 32 ms at 8 users). Dense GEMMs that read whole weight matrices now dominate, so the remaining lossless candidates are smaller:
+- **Remaining indexer glue:** about 80 tiny kernels per sparse layer (pool write, gated pooling, top-k post-processing), roughly 1.3 ms per step.
+- **Glue outside the layers:** sampling, verification and batch bookkeeping run about 680 tiny kernels per step, roughly 0.9 ms.
+- **FP32 MoE router:** 41 calls of about 19 µs each on cuBLAS's small-matrix path, 0.8 ms per step. A purpose-built kernel should be about 3× faster, but it would sum in a different order, so it isn't bit-identical.
+- **Small projections:** fuse `q_a` and `kv_a` into one GEMM plus one norm/rotary kernel, as the base HY4 model does.
+- **Verification cost at batch:** find which components make the step grow from 16 ms at 1 user to 32 ms at 8.
 - **Sparse-MLA autotune:** there's no FlashInfer SM120 sparse-MLA autotune cache, so the kernels run with default tactics.
-- **Verification cost at batch:** the step grows from 20 ms at 1 user to 36 ms at 8 users for 32 tokens. Find which components scale with tokens (MoE at 16 experts per token, per-token quantization) and batch them better.
-- **Acceptance:** the first draft token is right 58% of the time. The drafter was trained against the BF16 model and here reads an FP8 KV cache from a 4-bit target. To separate those effects, measure the same drafter on the FP8 target.
 - **Engram over PCIe:** 62 GiB of pinned tables are read through UVA every step. With the VRAM freed up, try moving some or all of them onto the GPUs.
 - **Power:** run the same sweep at 500–600 W to see how much is power-bound.
+- **Acceptance:** not improvable through configuration (see [V2 vs V1](#v2-vs-v1)); it would take a drafter trained for this setup.
 
 ## Known limitations
 

@@ -18,6 +18,7 @@ from vllm.model_executor.layers.linear import (
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.model_loader.weight_utils import make_attention_sink
 from vllm.models.hy_v4.nvidia.attention import HYV4MLAAttention
+from vllm.models.hy_v4.nvidia.mrope import apply_mrope
 from vllm.models.hy_v4_flash.configs import SLIDING_ATTENTION
 from vllm.platforms import current_platform
 
@@ -205,23 +206,14 @@ class HYV4FlashAttention(HYV4MLAAttention):
         kv = self.kv_a_proj_with_mqa(hidden_states)[0]
         kv_c, k_pe = kv.split((self.kv_lora_rank, self.qk_rope_head_dim), -1)
         kv_c = self.kv_a_layernorm(kv_c)
-        if positions.ndim == 2:
-            q_pe, k_pe = self.rotary_emb(
-                positions,
-                q[..., self.qk_nope_head_dim :].reshape(q.shape[0], -1),
-                k_pe,
-            )
-            q[..., self.qk_nope_head_dim :] = q_pe.reshape(
-                -1, self.num_local_heads, self.qk_rope_head_dim
-            )
-            k_pe = k_pe.reshape(-1, 1, self.qk_rope_head_dim)
-        else:
-            k_pe = k_pe.unsqueeze(1)
-            q[..., self.qk_nope_head_dim :], k_pe = self.rotary_emb(
-                positions,
-                q[..., self.qk_nope_head_dim :],
-                k_pe,
-            )
+        # V2: MRotaryEmbedding's native path is ~36 tiny torch kernels per
+        # layer (interleave selection of cos/sin, strided mul/sub/add, stack,
+        # cat, for q and k). The per-token cos/sin rows depend only on the
+        # positions, so HYV4FlashModel.forward builds them once per pass
+        # (set_token_rope) and vLLM's C rotary kernel rotates the strided q/k
+        # views in place in one launch, as the base HY4 model does.
+        k_pe = k_pe.unsqueeze(1)
+        apply_mrope(self.rotary_emb, positions, q[..., self.qk_nope_head_dim :], k_pe)
         if llama_4_scaling is not None:
             q *= llama_4_scaling
         out = torch.empty(

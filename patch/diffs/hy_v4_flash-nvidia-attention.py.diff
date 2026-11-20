@@ -1,6 +1,14 @@
 --- a/vllm/models/hy_v4_flash/nvidia/attention.py
 +++ b/vllm/models/hy_v4_flash/nvidia/attention.py
-@@ -70,10 +70,15 @@
+@@ -18,6 +18,7 @@
+ from vllm.model_executor.layers.rotary_embedding import get_rope
+ from vllm.model_executor.model_loader.weight_utils import make_attention_sink
+ from vllm.models.hy_v4.nvidia.attention import HYV4MLAAttention
++from vllm.models.hy_v4.nvidia.mrope import apply_mrope
+ from vllm.models.hy_v4_flash.configs import SLIDING_ATTENTION
+ from vllm.platforms import current_platform
+ 
+@@ -70,10 +71,15 @@
          self.learnable_sink = config.learnable_sink
          self.use_hpc_gated_mla = False
          capability = current_platform.get_device_capability()
@@ -20,7 +28,7 @@
          if self.kv_lora_rank != 512 or self.qk_rope_head_dim != 64:
              raise ValueError("Flash sparse MLA requires latent512 + rotary64 KV")
          if (
-@@ -175,12 +180,18 @@
+@@ -175,12 +181,18 @@
              use_sparse=True,
              indexer=self.indexer,
              topk_indices_buffer=topk_indices_buffer,
@@ -43,3 +51,35 @@
          self.post_proj_norm = (
              RMSNorm(config.hidden_size, config.rms_norm_eps)
              if config.sandwich_norm
+@@ -194,23 +206,14 @@
+         kv = self.kv_a_proj_with_mqa(hidden_states)[0]
+         kv_c, k_pe = kv.split((self.kv_lora_rank, self.qk_rope_head_dim), -1)
+         kv_c = self.kv_a_layernorm(kv_c)
+-        if positions.ndim == 2:
+-            q_pe, k_pe = self.rotary_emb(
+-                positions,
+-                q[..., self.qk_nope_head_dim :].reshape(q.shape[0], -1),
+-                k_pe,
+-            )
+-            q[..., self.qk_nope_head_dim :] = q_pe.reshape(
+-                -1, self.num_local_heads, self.qk_rope_head_dim
+-            )
+-            k_pe = k_pe.reshape(-1, 1, self.qk_rope_head_dim)
+-        else:
+-            k_pe = k_pe.unsqueeze(1)
+-            q[..., self.qk_nope_head_dim :], k_pe = self.rotary_emb(
+-                positions,
+-                q[..., self.qk_nope_head_dim :],
+-                k_pe,
+-            )
++        # V2: MRotaryEmbedding's native path is ~36 tiny torch kernels per
++        # layer (interleave selection of cos/sin, strided mul/sub/add, stack,
++        # cat, for q and k). The per-token cos/sin rows depend only on the
++        # positions, so HYV4FlashModel.forward builds them once per pass
++        # (set_token_rope) and vLLM's C rotary kernel rotates the strided q/k
++        # views in place in one launch, as the base HY4 model does.
++        k_pe = k_pe.unsqueeze(1)
++        apply_mrope(self.rotary_emb, positions, q[..., self.qk_nope_head_dim :], k_pe)
+         if llama_4_scaling is not None:
+             q *= llama_4_scaling
+         out = torch.empty(
